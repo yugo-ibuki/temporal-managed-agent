@@ -4,7 +4,7 @@ Temporal を使ったマネージド AI エージェントのプロトタイプ�
 
 エージェントの実行を一時的なプロセスではなく、状態を持つ長時間のタスクとして扱い、障害からの復旧や外部からの操作を含めて管理できる仕組みを検証します。
 
-> 現在は構想段階です。この README は検証の方向性をまとめたもので、以下の機能や構成はまだ実装されていません。
+> 現在はプロトタイプの準備段階です。ローカルの Temporal 環境は起動できますが、エージェントの Workflow・Worker・API はまだ実装されていません。以下のエージェント構成は検証に向けた案です。
 
 ## 目的
 
@@ -50,13 +50,83 @@ Temporal は実行の耐久性を担いますが、外部サービスへの副�
 - 実装言語と Temporal SDK
 - LLM プロバイダーとエージェント実装
 - API / UI の提供方法
-- ローカル開発環境とデプロイ先
+- Worker のローカル開発環境と本番のデプロイ先
 - 認証、ツールの権限、シークレットの管理方法
 - 実行コストや長期実行時の履歴サイズの管理方針
 
+## ローカルの Temporal 環境
+
+### 前提
+
+- Docker Engine / Docker Desktop が起動していること
+- Docker Compose v2 が利用できること
+- ポート `7233` と `8233` が空いていること
+
+### 起動
+
+```sh
+docker compose up -d --wait
+```
+
+[compose.yaml](compose.yaml) は、公式の `temporalio/temporal:1.10.1` イメージで `temporal server start-dev` を起動します。ホストへのポート公開はループバックアドレスに限定しています。
+
+| 項目 | 接続先 / 値 |
+| --- | --- |
+| Temporal gRPC（ホスト上の SDK から接続） | `localhost:7233` |
+| Web UI | <http://localhost:8233> |
+| Namespace | `default` |
+| データ保存先 | Docker の名前付きボリューム `temporal-data`（Compose のプロジェクト名が接頭辞になります） |
+
+別の Compose サービスから接続する場合は、gRPC アドレスに `temporal:7233` を使います。
+
+> この構成は SQLite を利用する開発専用サーバーです。認証・TLS・高可用性は設定していないため、本番環境や外部公開には使用しないでください。LLM の API キーは起動に不要です。
+
+### 状態確認と CLI
+
+Temporal CLI はコンテナ内に含まれるため、ホストへのインストールは不要です。
+
+```sh
+# コンテナとヘルスチェックの状態
+docker compose ps
+
+# Temporal のヘルスチェック
+docker compose exec temporal temporal operator cluster health
+
+# Workflow の一覧
+docker compose exec temporal temporal workflow list
+
+# サーバーログ
+docker compose logs -f temporal
+```
+
+### 停止・再起動・初期化
+
+```sh
+# 停止・コンテナ削除（実行履歴はボリュームに残る）
+docker compose down
+
+# 再起動（保存済みのデータを利用）
+docker compose up -d --wait
+```
+
+**すべてのローカルデータを削除して初期化する場合のみ**、次を実行します。
+
+```sh
+docker compose down --volumes
+docker compose up -d --wait
+```
+
+### 動作確認済みの内容
+
+- Compose の設定検証とヘルスチェックの成功
+- Web UI が HTTP 200 を返すこと
+- テスト用 Workflow を登録し、`docker compose down` → `up` 後も同じ Run ID の実行情報を取得できること
+
+テスト用 Workflow は確認後に Terminate 済みです。Worker はまだないため、Workflow の処理実行や Worker 障害からの復旧は未検証です。
+
 ## 開発状況
 
-現時点ではコードや実行手順はありません。技術選定と最小構成の実装に合わせて、セットアップ・起動・テストの手順を追記します。
+Temporal のローカル環境を用意しました。次は SDK を選定し、最小の Workflow と Worker を実装します。
 
 ## 参考
 
