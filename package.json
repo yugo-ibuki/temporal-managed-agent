@@ -1,0 +1,23 @@
+{
+  "name": "temporal-managed-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A managed agent prototype built on Temporal",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "worker": "node dist/worker.js",
+    "agent": "node dist/cli.js",
+    "test:integration": "npm run build && node --test dist/integration.test.js"
+  },
+  "dependencies": {
+    "@temporalio/client": "1.26.0",
+    "@temporalio/worker": "1.26.0",
+    "@temporalio/workflow": "1.26.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.9.0"
+  }
+}

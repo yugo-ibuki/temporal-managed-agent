@@ -4,7 +4,7 @@ Temporal を使ったマネージド AI エージェントのプロトタイプ�
 
 エージェントの実行を一時的なプロセスではなく、状態を持つ長時間のタスクとして扱い、障害からの復旧や外部からの操作を含めて管理できる仕組みを検証します。
 
-> 現在はプロトタイプの準備段階です。ローカルの Temporal 環境は起動できますが、エージェントの Workflow・Worker・API はまだ実装されていません。以下のエージェント構成は検証に向けた案です。
+> TypeScript の最小 Workflow・Worker・操作用 CLI を実装しています。「開始 → モック計画作成 → 承認待ち → モック実行 → 完了」を試せます。LLM、外部ツール、HTTP API はまだ実装していません。
 
 ## 目的
 
@@ -47,10 +47,9 @@ Temporal は実行の耐久性を担いますが、外部サービスへの副�
 
 ## 未決定の事項
 
-- 実装言語と Temporal SDK
 - LLM プロバイダーとエージェント実装
 - API / UI の提供方法
-- Worker のローカル開発環境と本番のデプロイ先
+- 本番のデプロイ先
 - 認証、ツールの権限、シークレットの管理方法
 - 実行コストや長期実行時の履歴サイズの管理方針
 
@@ -65,10 +64,12 @@ Temporal は実行の耐久性を担いますが、外部サービスへの副�
 ### 起動
 
 ```sh
-docker compose up -d --wait
+docker compose up -d --build --wait
 ```
 
-[compose.yaml](compose.yaml) は、公式の `temporalio/temporal:1.10.1` イメージで `temporal server start-dev` を起動します。ホストへのポート公開はループバックアドレスに限定しています。
+[compose.yaml](compose.yaml) は、公式の `temporalio/temporal:1.10.1` イメージで `temporal server start-dev` を起動し、Node.js 22 のコンテナで Worker を起動します。ホストへのポート公開はループバックアドレスに限定しています。ホストへの Node.js インストールは不要です。
+
+初回は `docker compose up` でも Worker がビルドされます。ソース変更後は `--build` を付けて再ビルドしてください。Worker の起動は `docker compose logs worker` の `RUNNING` で確認できます。
 
 | 項目 | 接続先 / 値 |
 | --- | --- |
@@ -122,11 +123,112 @@ docker compose up -d --wait
 - Web UI が HTTP 200 を返すこと
 - テスト用 Workflow を登録し、`docker compose down` → `up` 後も同じ Run ID の実行情報を取得できること
 
-テスト用 Workflow は確認後に Terminate 済みです。Worker はまだないため、Workflow の処理実行や Worker 障害からの復旧は未検証です。
+- 承認待ちから Signal によって処理が再開し、Workflow が完了すること
+- 承認待ちの Workflow をキャンセルできること
+- 承認待ちで Worker を再起動しても状態を復元し、承認後に完了できること
 
-## 開発状況
+## エージェントを操作する
 
-Temporal のローカル環境を用意しました。次は SDK を選定し、最小の Workflow と Worker を実装します。
+### Docker だけで試す
+
+```sh
+# 開始（demo-1 は実行ごとに別の ID に変えてください）
+docker compose exec worker npm run agent -- start "調査レポートを作成する" demo-1
+
+# 状態確認：state.phase が waiting_for_approval になる
+docker compose exec worker npm run agent -- status demo-1
+
+# 承認して再開
+docker compose exec worker npm run agent -- approve demo-1
+
+# 完了を待って結果を取得
+docker compose exec worker npm run agent -- result demo-1
+```
+
+実行と履歴は <http://localhost:8233> でも確認できます。`start` は ID を省略するとランダムな ID を生成します。`result` は実行が終了するまで待機します。
+
+キャンセルは、別の実行を開始して試せます。
+
+```sh
+docker compose exec worker npm run agent -- start "キャンセル確認" demo-cancel-1
+docker compose exec worker npm run agent -- cancel demo-cancel-1
+docker compose exec worker npm run agent -- status demo-cancel-1
+```
+
+キャンセルは非同期です。反映後、`status` に `CANCELLED` が表示されます。
+
+### Worker 再起動を試す
+
+承認待ちの Workflow に対して、次を実行します。
+
+```sh
+docker compose restart worker
+docker compose exec worker npm run agent -- status demo-1
+docker compose exec worker npm run agent -- approve demo-1
+docker compose exec worker npm run agent -- result demo-1
+```
+
+完了済みの `demo-1` ではなく、新しく開始した承認待ちの ID を指定してください。Worker が停止している間も Temporal は実行履歴を保持します。ただし処理や Query は Worker が復帰するまで進みません。
+
+### 実装の構成
+
+| ファイル | 役割 |
+| --- | --- |
+| `src/workflows.ts` | Activity の呼び出し、承認 Signal の待機、状態 Query |
+| `src/activities.ts` | 計画作成・実行のモック（後から LLM / ツールへ置き換える箇所） |
+| `src/worker.ts` | Workflow と Activities を登録し、タスクを処理 |
+| `src/cli.ts` | 開始・状態確認・承認・結果取得・キャンセル |
+| `src/config.ts` | Temporal 接続先・Namespace・Task Queue |
+| `src/integration.test.ts` | 実サーバーと Worker を使う結合テスト |
+
+設定は環境変数で変更できます。ホストで実行する場合のデフォルト値は次のとおりです。Compose 内では接続先が `temporal:7233` になります。
+
+| 環境変数 | デフォルト |
+| --- | --- |
+| `TEMPORAL_ADDRESS` | `localhost:7233` |
+| `TEMPORAL_NAMESPACE` | `default` |
+| `TEMPORAL_TASK_QUEUE` | `managed-agent` |
+
+### ホスト上で開発する
+
+Node.js 22 以上と npm を利用します。
+
+```sh
+npm ci
+npm run typecheck
+npm run build
+
+# サーバーのみ Docker で起動し、Worker はホストで実行
+# 同じ Queue を異なるバージョンの Worker が処理しないよう、Compose の Worker は停止する
+docker compose stop worker
+docker compose up -d --wait temporal
+npm run worker
+```
+
+別のターミナルから `npm run agent -- start "タスク"` などで操作できます。ソース変更後は再ビルドして Worker を再起動してください。
+
+### 結合テスト
+
+Temporal Server と Worker を起動した状態で実行します。テストは固有の Workflow ID を使い、承認・完了・キャンセルを確認します。
+
+```sh
+docker compose up -d --build --wait
+# Docker 内で実行（ホストに Node.js は不要）
+docker compose exec worker node --test dist/integration.test.js
+
+# またはホストから実行
+npm ci
+npm run test:integration
+```
+
+## 現時点の制約
+
+- LLM や外部ツールは呼ばず、文字列を返すモックです。
+- 承認は認証なしの Signal です。実際の権限管理や、計画と承認の厳密な紐付けは未実装です。
+- Workflow の実行期限は CLI で開始した場合 24 時間、Activity は 1 回 30 秒・最大 3 回の試行です。タイムアウトやリトライの障害注入テストは未実施です。
+- キャンセルは現在の承認待ちで検証しています。外部ツールの中断には、個別のキャンセル対応が必要です。
+- モックは副作用を持ちません。実ツールを追加する際は Activity の再実行に備えた冪等性の設計が必要です。
+- Workflow の履歴にはタスク・計画・結果が保存されます。機密情報は投入しないでください。
 
 ## 参考
 

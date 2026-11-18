@@ -21,5 +21,17 @@ services:
       retries: 12
       start_period: 10s
 
+  worker:
+    build: .
+    init: true
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_NAMESPACE: default
+      TEMPORAL_TASK_QUEUE: managed-agent
+    depends_on:
+      temporal:
+        condition: service_healthy
+    stop_grace_period: 30s
+
 volumes:
   temporal-data:
