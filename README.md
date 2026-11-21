@@ -4,7 +4,7 @@ Temporal を使ったマネージド AI エージェントのプロトタイプ�
 
 エージェントの実行を一時的なプロセスではなく、状態を持つ長時間のタスクとして扱い、障害からの復旧や外部からの操作を含めて管理できる仕組みを検証します。
 
-> TypeScript の最小 Workflow・Worker・操作用 CLI を実装しています。「開始 → モック計画作成 → 承認待ち → モック実行 → 完了」を試せます。LLM、外部ツール、HTTP API はまだ実装していません。
+> `start` はキー不要のモック、`start-ai` は OpenAI を使う最小エージェントです。どちらも同じ CLI と Worker で操作できます。
 
 ## 目的
 
@@ -47,7 +47,7 @@ Temporal は実行の耐久性を担いますが、外部サービスへの副�
 
 ## 未決定の事項
 
-- LLM プロバイダーとエージェント実装
+- 本番で使う LLM とツール
 - API / UI の提供方法
 - 本番のデプロイ先
 - 認証、ツールの権限、シークレットの管理方法
@@ -129,7 +129,21 @@ docker compose up -d --wait
 
 ## エージェントを操作する
 
-### Docker だけで試す
+### LLM を使う（任意）
+
+ローカルの `.env` に `OPENAI_API_KEY` を設定し、`docker compose up -d --build worker` で Worker に反映します。次のコマンドはタスクを OpenAI (`gpt-4o-mini`) に送り、API 利用料が発生します。
+
+```sh
+docker compose exec worker npm run agent -- start-ai "時計ツールを使って現在のUTC時刻を教えて" clock-1
+docker compose exec worker npm run agent -- status clock-1
+# waiting_for_approval の場合だけ実行
+docker compose exec worker npm run agent -- approve clock-1
+docker compose exec worker npm run agent -- result clock-1
+```
+
+モデルは直接回答するか、時計ツールを要求します。後者では承認後に一度だけ時刻を取得し、その結果をモデルに渡して回答を得ます。モデル呼び出しは最大2ステップで、自動リトライしません。
+
+### Docker だけでモックを試す
 
 ```sh
 # 開始（demo-1 は実行ごとに別の ID に変えてください）
@@ -175,10 +189,11 @@ docker compose exec worker npm run agent -- result demo-1
 | ファイル | 役割 |
 | --- | --- |
 | `src/workflows.ts` | Activity の呼び出し、承認 Signal の待機、状態 Query |
-| `src/activities.ts` | 計画作成・実行のモック（後から LLM / ツールへ置き換える箇所） |
+| `src/activities.ts` | モック処理、OpenAI 呼び出し、時計ツール |
 | `src/worker.ts` | Workflow と Activities を登録し、タスクを処理 |
 | `src/cli.ts` | 開始・状態確認・承認・結果取得・キャンセル |
 | `src/config.ts` | Temporal 接続先・Namespace・Task Queue |
+| `src/contracts.ts` | Workflow 名、Signal / Query 名、状態の共有型 |
 | `src/integration.test.ts` | 実サーバーと Worker を使う結合テスト |
 
 設定は環境変数で変更できます。ホストで実行する場合のデフォルト値は次のとおりです。Compose 内では接続先が `temporal:7233` になります。
@@ -188,6 +203,7 @@ docker compose exec worker npm run agent -- result demo-1
 | `TEMPORAL_ADDRESS` | `localhost:7233` |
 | `TEMPORAL_NAMESPACE` | `default` |
 | `TEMPORAL_TASK_QUEUE` | `managed-agent` |
+| `OPENAI_API_KEY` | 未設定（任意。`start-ai` 使用時のみ Worker に設定） |
 
 ### ホスト上で開発する
 
@@ -205,11 +221,15 @@ docker compose up -d --wait temporal
 npm run worker
 ```
 
+ホストで `start-ai` を使用する場合は、Worker 起動前に `OPENAI_API_KEY` を環境変数として設定してください（ホストの Node.js は `.env` を自動では読み込みません）。
+
 別のターミナルから `npm run agent -- start "タスク"` などで操作できます。ソース変更後は再ビルドして Worker を再起動してください。
 
-### 結合テスト
+### テスト
 
-Temporal Server と Worker を起動した状態で実行します。テストは固有の Workflow ID を使い、承認・完了・キャンセルを確認します。
+`npm test` は OpenAI 通信をモックした Activity 単体テストです。Temporal Server や API キーは不要です。
+
+結合テストは Temporal Server と Worker を起動した状態で実行します。固有の Workflow ID を使い、モックの承認・完了・キャンセルに加え、専用 Queue のテスト Worker で AI の直接回答・ツール承認・先行承認の無視・異常応答・不正モードを確認します。AI 用 Activities は差し替えるため、API キーや API 利用料は不要です。
 
 ```sh
 docker compose up -d --build --wait
@@ -223,9 +243,9 @@ npm run test:integration
 
 ## 現時点の制約
 
-- LLM や外部ツールは呼ばず、文字列を返すモックです。
+- `start-ai` のツールは UTC 時刻取得のみです。任意のコマンドや外部ツールは実行しません。
 - 承認は認証なしの Signal です。実際の権限管理や、計画と承認の厳密な紐付けは未実装です。
-- Workflow の実行期限は CLI で開始した場合 24 時間、Activity は 1 回 30 秒・最大 3 回の試行です。タイムアウトやリトライの障害注入テストは未実施です。
+- Workflow の実行期限は CLI で開始した場合 24 時間、Activity は 1 回 30 秒・最大 3 回の試行です（LLM 呼び出しは 1 回のみ）。タイムアウトやリトライの障害注入テストは未実施です。
 - キャンセルは現在の承認待ちで検証しています。外部ツールの中断には、個別のキャンセル対応が必要です。
 - モックは副作用を持ちません。実ツールを追加する際は Activity の再実行に備えた冪等性の設計が必要です。
 - Workflow の履歴にはタスク・計画・結果が保存されます。機密情報は投入しないでください。
