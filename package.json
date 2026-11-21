@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit",
     "worker": "node dist/worker.js",
     "agent": "node dist/cli.js",
+    "test": "npm run build && node --test dist/activities.test.js",
     "test:integration": "npm run build && node --test dist/integration.test.js"
   },
   "dependencies": {
