@@ -5,6 +5,7 @@ import { APPROVE_SIGNAL, STATUS_QUERY, WORKFLOW_TYPE, type AgentState } from './
 
 const usage = `Usage:
   npm run agent -- start "task" [workflow-id]
+  npm run agent -- start-ai "task" [workflow-id]
   npm run agent -- status <workflow-id>
   npm run agent -- approve <workflow-id>
   npm run agent -- result <workflow-id>
@@ -12,20 +13,20 @@ const usage = `Usage:
 
 async function main(): Promise<void> {
   const [command, value, id, ...extra] = process.argv.slice(2);
-  if (!command || !value?.trim() || extra.length > 0 ||
-      !['start', 'status', 'approve', 'result', 'cancel'].includes(command) ||
-      (command !== 'start' && id !== undefined)) {
+  const isStart = command === 'start' || command === 'start-ai';
+  if (!command || !value?.trim() || extra.length > 0 || (id !== undefined && !id.trim()) ||
+      (!isStart && (!['status', 'approve', 'result', 'cancel'].includes(command) || id !== undefined))) {
     throw new Error(usage);
   }
 
   const connection = await Connection.connect({ address: config.address });
   try {
     const client = new Client({ connection, namespace: config.namespace });
-    if (command === 'start') {
+    if (isStart) {
       const handle = await client.workflow.start(WORKFLOW_TYPE, {
         workflowId: id || `agent-${randomUUID()}`,
         taskQueue: config.taskQueue,
-        args: [value],
+        args: command === 'start-ai' ? [value, 'ai'] : [value],
         // Bound approval waits as well as execution in this prototype.
         workflowExecutionTimeout: '24 hours',
       });
